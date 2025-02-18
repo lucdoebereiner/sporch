@@ -1,0 +1,12 @@
+Vc
+/home/luc/Dropbox/music/corpi/_OrchideaSOL2020_release/OrchideaSOL2020/Strings/Violoncello/ordinario
+/home/luc/Dropbox/music/corpi/_OrchideaSOL2020_release/OrchideaSOL2020/Strings/Violoncello/sul_ponticello
+/home/luc/Dropbox/music/corpi/_OrchideaSOL2020_release/OrchideaSOL2020/Strings/Violoncello/artificial_harmonic
+
+Vn
+/home/luc/Dropbox/music/corpi/_OrchideaSOL2020_release/OrchideaSOL2020/Strings/Violin/ordinario
+/home/luc/Dropbox/music/corpi/_OrchideaSOL2020_release/OrchideaSOL2020/Strings/Violin/sul_ponticello
+/home/luc/Dropbox/music/corpi/_OrchideaSOL2020_release/OrchideaSOL2020/Strings/Violin/artificial_harmonic
+
+Acc
+/home/luc/Dropbox/music/corpi/_OrchideaSOL2020_release/OrchideaSOL2020/Keyboards/Accordion/ordinario
