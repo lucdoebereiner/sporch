@@ -25,7 +25,7 @@ impl PartialEq for Individual {
 fn get_allowed_notes(instrument: Instrument) -> Vec<usize> {
     match instrument {
         Instrument::Violin | Instrument::Cello => vec![1, 1, 1, 2], // Can play either 1 or 2 notes
-        Instrument::Accordion => (1..=6).collect(),                 // Can play 1 to 6 notes
+        Instrument::Accordion | Instrument::Synth => (1..=6).collect(),                 // Can play 1 to 6 notes
     }
 }
 
@@ -419,7 +419,7 @@ fn crossover(
                 }
             }
 
-            Instrument::Accordion => {
+            Instrument::Accordion | Instrument::Synth => {
                 // Choose parent to inherit from
 
                 // Choose parent to inherit from

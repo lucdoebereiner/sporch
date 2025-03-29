@@ -1,3 +1,4 @@
+//use realfft::num_traits::Float;
 use realfft::{num_complex, RealFftPlanner};
 //use num_complex::Complex32;
 use rubato::{
@@ -21,8 +22,8 @@ use symphonia::core::probe::Hint;
 use serde::{Deserialize, Serialize};
 //use bincode;
 
-const TARGET_SAMPLE_RATE: u32 = 48000;
-const TARGET_SAMPLES: usize = 16384;
+pub const TARGET_SAMPLE_RATE: u32 = 48000;
+pub const TARGET_SAMPLES: usize = 16384;
 
 /// Compute a Hanning window of a given size.
 fn hanning_window(size: usize) -> Vec<f32> {
@@ -207,6 +208,7 @@ fn normalize_db_spectrum(spectrum: &[f32]) -> Vec<f32> {
 }
         */
 
+/*         
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a
         .iter()
@@ -217,6 +219,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let norm_b = b.iter().map(|x| x * x).sum::<f32>().sqrt();
     dot / (norm_a * norm_b)
 }
+    */
 
 /// Normalize by RMS to remove overall loudness differences.
 fn normalize_by_rms(magnitudes: &mut [f32]) {
@@ -246,8 +249,190 @@ fn compare_spectra_with_normalization(
             println!("i : {}, e: {}", i, e);
         }
     */
-    cosine_similarity(&target_mags, &candidate_mags)
+
+    efficient_asymmetric_similarity(&target_mags, &candidate_mags)
+   // cosine_similarity(&target_mags, &candidate_mags)
 }
+
+
+fn efficient_asymmetric_similarity(target: &[f32], candidate: &[f32]) -> f32 {
+    // Standard dot product calculation
+    let mut dot_product = 0.0;
+    let mut target_squared_sum = 0.0;
+    let mut candidate_squared_sum = 0.0;
+    let mut excess_energy_sum = 0.0;
+    
+    // Pre-calculate the maximum target value for normalization
+    let target_max = target.iter().cloned().fold(0.0, f32::max);
+    let threshold = target_max * 0.05;
+    
+    for i in 0..target.len() {
+        // Standard cosine similarity components
+        dot_product += target[i] * candidate[i];
+        target_squared_sum += target[i] * target[i];
+        candidate_squared_sum += candidate[i] * candidate[i];
+        
+        // Calculate excess energy (asymmetric penalty)
+        if candidate[i] > target[i] && target[i] < threshold {
+            excess_energy_sum += (candidate[i] - target[i]) / target_max;
+        }
+    }
+    
+    // Calculate cosine similarity
+    let cosine = if target_squared_sum > 0.0 && candidate_squared_sum > 0.0 {
+        dot_product / (target_squared_sum.sqrt() * candidate_squared_sum.sqrt())
+    } else {
+        0.0
+    };
+    
+    // Apply penalty (normalized by spectrum size)
+    let penalty = (excess_energy_sum / target.len() as f32).min(0.5);
+    
+    // Final score with asymmetric penalty
+    cosine * (1.0 - penalty)
+}
+
+/* *
+fn hybrid_spectral_similarity(target: &[f32], candidate: &[f32]) -> f32 {
+    // Standard cosine similarity
+    let cosine_sim = cosine_similarity(target, candidate);
+    
+    // Calculate asymmetric penalty for extra content
+    let mut extra_content_penalty = 0.0;
+    let mut significant_bins = 0;
+    
+    for i in 0..target.len() {
+        // Find bins where candidate has more energy than target
+        if candidate[i] > target[i] {
+            // Calculate the excess energy (normalized by max target magnitude)
+            let target_max = target.iter().cloned().fold(0.0, f32::max);
+            let excess = (candidate[i] - target[i]) / target_max;
+            extra_content_penalty += excess;
+        }
+        
+        // Count significant target bins for normalization
+        if target[i] > 0.05 * target.iter().cloned().fold(0.0, f32::max) {
+            significant_bins += 1;
+        }
+    }
+    
+    // Normalize penalty
+    if significant_bins > 0 {
+        extra_content_penalty /= significant_bins as f32;
+    }
+    
+    // Calculate peak matching component
+    let target_peaks = find_significant_peaks(target, 8);
+    let candidate_peaks = find_significant_peaks(candidate, 12); // Get more candidate peaks
+    
+    let peak_match_score = calculate_peak_match(
+        &target_peaks, 
+        &candidate_peaks, 
+        target.len()
+    );
+    
+    // Combine scores (adjust weights to taste)
+    // Penalize extra content by reducing the cosine similarity
+    let adjusted_cosine = cosine_sim * (1.0 - extra_content_penalty.min(0.7));
+    
+    0.6 * adjusted_cosine + 0.4 * peak_match_score
+}
+
+fn find_significant_peaks(spectrum: &[f32], max_peaks: usize) -> Vec<(usize, f32)> {
+    let threshold = 0.1 * spectrum.iter().cloned().fold(0.0, f32::max);
+    let mut peaks = Vec::new();
+    
+    // First, find all peaks above threshold
+    for i in 2..spectrum.len()-2 {
+        if spectrum[i] > threshold &&
+           spectrum[i] > spectrum[i-1] &&
+           spectrum[i] > spectrum[i-2] &&
+           spectrum[i] > spectrum[i+1] &&
+           spectrum[i] > spectrum[i+2] {
+            peaks.push((i, spectrum[i]));
+        }
+    }
+    
+    // Sort by magnitude (highest first) and take top N
+    peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    peaks.truncate(max_peaks);
+    
+    peaks
+}
+
+fn calculate_peak_match(
+    target_peaks: &[(usize, f32)],
+    candidate_peaks: &[(usize, f32)],
+    spectrum_length: usize
+) -> f32 {
+    if target_peaks.is_empty() {
+        return 0.0;
+    }
+    
+    let mut total_match = 0.0;
+    
+    for &(target_idx, target_mag) in target_peaks {
+        let mut best_match = 0.0;
+        
+        for &(cand_idx, cand_mag) in candidate_peaks {
+            // Calculate frequency distance (normalized)
+            let freq_distance = (target_idx as f32 - cand_idx as f32).abs() / 
+                                (spectrum_length as f32 * 0.1); // 10% of spectrum is "close"
+            
+            // Calculate magnitude similarity
+            let mag_ratio = if target_mag > cand_mag {
+                cand_mag / target_mag  // Penalize if candidate peak is weaker
+            } else {
+                1.0 - 0.3 * ((cand_mag / target_mag) - 1.0).min(1.0)  // Slight penalty if too strong
+            };
+            
+            // Combine to get match quality for this peak
+            let match_quality = (1.0 - freq_distance.min(1.0)) * mag_ratio;
+            best_match = best_match.max(match_quality);
+        }
+        
+        total_match += best_match;
+    }
+    
+    // Calculate mean match quality across all target peaks
+    total_match / target_peaks.len() as f32
+}
+    */
+
+/* 
+fn adaptive_spectrum_comparison(target: &[f32], candidate: &[f32]) -> f32 {
+    // Calculate where energy is concentrated in target
+    let total_energy: f32 = target.iter().map(|&x| x*x).sum();
+    let low_end = target.len() / 10;
+    let mid_end = target.len() * 4 / 10;
+    
+    let low_energy = target[0..low_end].iter().map(|&x| x*x).sum::<f32>() / total_energy;
+    let mid_energy = target[low_end..mid_end].iter().map(|&x| x*x).sum::<f32>() / total_energy;
+    let high_energy = target[mid_end..].iter().map(|&x| x*x).sum::<f32>() / total_energy;
+    
+    // Weight similarity based on energy distribution
+    let low_sim = cosine_similarity(&target[0..low_end], &candidate[0..low_end]) * low_energy;
+    let mid_sim = cosine_similarity(&target[low_end..mid_end], &candidate[low_end..mid_end]) * mid_energy;
+    let high_sim = cosine_similarity(&target[mid_end..], &candidate[mid_end..]) * high_energy;
+    
+    low_sim + mid_sim + high_sim
+}
+*/
+// fn weighted_spectrum_comparison(target: &[f32], candidate: &[f32]) -> f32 {
+//     // Balance low/mid/high frequency contributions
+//     let low_freq_weight = 0.3;
+//     let mid_freq_weight = 0.4;
+//     let high_freq_weight = 0.3;
+    
+//     let low_end = target.len() / 10;
+//     let mid_end = target.len() * 4 / 10;
+    
+//     let low_sim = cosine_similarity(&target[0..low_end], &candidate[0..low_end]) * low_freq_weight;
+//     let mid_sim = cosine_similarity(&target[low_end..mid_end], &candidate[low_end..mid_end]) * mid_freq_weight;
+//     let high_sim = cosine_similarity(&target[mid_end..], &candidate[mid_end..]) * high_freq_weight;
+    
+//     low_sim + mid_sim + high_sim
+// }
 
 /* 
 pub fn compare_audio_segments(target: &[f32], candidate: &[f32]) -> f32 {
@@ -292,11 +477,12 @@ pub fn compare_audio_segments_with_precomputed_target(
     compare_spectra_with_normalization(target_features, &candidate_features, num_magnitude)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Eq, Hash)]
 pub enum Instrument {
     Violin,
     Cello,
     Accordion,
+    Synth,
 }
 
 impl FromStr for Instrument {
@@ -307,6 +493,7 @@ impl FromStr for Instrument {
             "Vn" => Ok(Instrument::Violin),
             "Vc" => Ok(Instrument::Cello),
             "Acc" => Ok(Instrument::Accordion),
+            "Synth" => Ok(Instrument::Accordion),
             _ => Err(()),
         }
     }
@@ -349,6 +536,7 @@ impl FromStr for PlayingTechnique {
         }
     }
 }
+
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -557,7 +745,7 @@ pub fn load_audio_corpus(paths: &[String], instrument: Instrument) -> Vec<Corpus
 }
 
 // Helper: Convert a 24-bit sample (stored as i32) to an f32 value in the range [-1.0, 1.0].
-fn convert_s24_to_f32(sample: i32) -> f32 {
+pub fn convert_s24_to_f32(sample: i32) -> f32 {
     // 2^(24-1) = 2^23 = 8388608.0
     sample as f32 / 8388608.0
 }
@@ -770,7 +958,7 @@ pub fn load_middle_n_samples(path: &String) -> Option<Vec<f32>> {
     Some(final_samples)
 }
 
-
+/* 
 // In analysis.rs, modify load_middle_n_samples to load_samples_at_time:
 pub fn load_samples_at_time(path: &String, start_seconds: f32) -> Option<Vec<f32>> {
     let file = File::open(Path::new(path)).ok()?;
@@ -952,3 +1140,4 @@ pub fn load_samples_at_time(path: &String, start_seconds: f32) -> Option<Vec<f32
 
     Some(final_samples)
 }
+    */

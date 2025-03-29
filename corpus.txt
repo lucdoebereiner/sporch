@@ -10,3 +10,6 @@ Vn
 
 Acc
 /home/luc/Dropbox/music/corpi/_OrchideaSOL2020_release/OrchideaSOL2020/Keyboards/Accordion/ordinario
+
+Synth
+/home/luc/Dropbox/music/corpi/poly_d

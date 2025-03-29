@@ -6,8 +6,12 @@ use std::{env, error::Error, fs};
 
 mod analysis;
 mod search;
+mod input;
+mod lilypond;
 
-use search::genetic_search;
+use input::process_audio_segment;
+//use search::genetic_search;
+
 
 use crate::analysis::*;
 use crate::search::*;
@@ -355,6 +359,8 @@ pub fn save_solution(
 //     Ok(())
 // }
 
+
+/* 
 fn print_solution_details(solution: &[CorpusVoices], corpuses: &[Corpus]) {
     println!("\nSolution Details:");
     println!("================");
@@ -391,6 +397,7 @@ fn print_solution_details(solution: &[CorpusVoices], corpuses: &[Corpus]) {
         }
     }
 }
+*/
 
 // Helper function to convert MIDI note numbers to note names
 fn midi_to_note_name(midi_note: u8) -> String {
@@ -403,16 +410,19 @@ fn midi_to_note_name(midi_note: u8) -> String {
 }
 
 fn main() -> io::Result<()> {
+
     let args: Vec<String> = env::args().collect();
-    if args.len() != 4 {
+    if args.len() != 6 {
         eprintln!(
-            "Usage: {} <target_file> <start_seconds> <output_file>",
+            "Usage: {} <target_file> <start_seconds> <end_seconds> <frame_duration> <output_file>",
             args[0]
         );
         eprintln!("The program expects:");
         eprintln!("  - A file 'corpus.txt' in the current directory");
         eprintln!("  - A target audio file to match");
-        eprintln!("  - A start point in seconds within the target file");
+        eprintln!("  - Start time in seconds");
+        eprintln!("  - End time in seconds");
+        eprintln!("  - Frame duration in seconds");
         eprintln!("  - An output path for the mixed solution");
         std::process::exit(1);
     }
@@ -425,7 +435,22 @@ fn main() -> io::Result<()> {
             std::process::exit(1);
         }
     };
-    let output_file = &args[3];
+    let end_seconds = match args[3].parse::<f32>() {
+        Ok(seconds) => seconds,
+        Err(_) => {
+            eprintln!("Error: end_seconds must be a valid number");
+            std::process::exit(1);
+        }
+    };
+    let frame_duration = match args[4].parse::<f32>() {
+        Ok(seconds) => seconds,
+        Err(_) => {
+            eprintln!("Error: frame_duration must be a valid number");
+            std::process::exit(1);
+        }
+    };
+
+    let output_file = &args[5];
 
     // 1) Check if corpus.bincode exists
     let bincode_path = "corpus.bincode";
@@ -505,22 +530,8 @@ fn main() -> io::Result<()> {
         parsed_corpuses
     };
 
-    // Just to confirm how many we have:
-    println!("Loaded {} total corpuses", all_corpuses.len());
-    for corpus in &all_corpuses {
-        println!(
-            "Corpus for {:?} contains {} entries",
-            corpus.instrument,
-            corpus.entries.len()
-        );
-        /* 
-        for entry in &corpus.entries {
-            println!("  {:?}", entry.info);
-            println!("  {:?}", entry.path_name);
-        }
-        */
-    }
-
+    
+    /* 
     // Continue with the rest of your logic:
     println!("Loading target file: {target_file} at {start_seconds} seconds");
     let target = match load_samples_at_time(target_file, start_seconds) {
@@ -533,17 +544,34 @@ fn main() -> io::Result<()> {
             std::process::exit(1);
         }
     };
+*/
 
-    let solution = genetic_search(&target, &all_corpuses, 3000, 1500, 50);
+    println!("Loaded {} total corpuses", all_corpuses.len());
+    for corpus in &all_corpuses {
+        println!(
+            "Corpus for {:?} contains {} entries",
+            corpus.instrument,
+            corpus.entries.len()
+        );
+    }
 
-    println!("\nGenetic search complete!");
-    print_solution_details(&solution, &all_corpuses);
-
-    println!("\nMixing solution...");
-    if let Err(e) = save_solution(&solution, &all_corpuses, output_file) {
-        eprintln!("Failed to save mixed solution: {}", e);
+    // Process the audio segment
+    if let Err(e) = process_audio_segment(target_file, start_seconds, end_seconds, &all_corpuses, frame_duration, output_file) {
+        eprintln!("Error processing audio segment: {}", e);
         std::process::exit(1);
     }
+
+
+    // let solution = genetic_search(&target, &all_corpuses, 3000, 1500, 50);
+
+    // println!("\nGenetic search complete!");
+    // print_solution_details(&solution, &all_corpuses);
+
+    // println!("\nMixing solution...");
+    // if let Err(e) = save_solution(&solution, &all_corpuses, output_file) {
+    //     eprintln!("Failed to save mixed solution: {}", e);
+    //     std::process::exit(1);
+    // }
 
     Ok(())
 }
