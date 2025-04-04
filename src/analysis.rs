@@ -493,7 +493,7 @@ impl FromStr for Instrument {
             "Vn" => Ok(Instrument::Violin),
             "Vc" => Ok(Instrument::Cello),
             "Acc" => Ok(Instrument::Accordion),
-            "Synth" => Ok(Instrument::Accordion),
+            "Synth" => Ok(Instrument::Synth),
             _ => Err(()),
         }
     }
@@ -511,6 +511,7 @@ pub enum PlayingTechnique {
     Ordinario,
     ArtificialHarmonic,
     SulPonticello,
+    Triangle,
 }
 
 
@@ -520,6 +521,7 @@ impl std::fmt::Display for PlayingTechnique {
             PlayingTechnique::Ordinario => write!(f, "ord"),
             PlayingTechnique::ArtificialHarmonic => write!(f, "art_harm"),
             PlayingTechnique::SulPonticello => write!(f, "pont"),
+            PlayingTechnique::Triangle => write!(f, "triangle"),
         }
     }
 }
@@ -532,11 +534,14 @@ impl FromStr for PlayingTechnique {
             "ord" => Ok(PlayingTechnique::Ordinario),
             "art_harm" => Ok(PlayingTechnique::ArtificialHarmonic),
             "pont" => Ok(PlayingTechnique::SulPonticello),
+            // Add mappings for synth waveforms as Ordinario
+            "triangle" | "sine" | "square" | "saw" | "pulse" => Ok(PlayingTechnique::Ordinario),
+            // For accordion
+            "ord" | "stac" | "trem" => Ok(PlayingTechnique::Ordinario),
             _ => Err(()),
         }
     }
 }
-
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -658,7 +663,7 @@ pub fn can_play_double_stop(
 }
 
 
-fn parse_corpus_filename(filename: &str, instrument: Instrument) -> Option<CorpusEntryInfo> {
+pub fn parse_corpus_filename(filename: &str, instrument: Instrument) -> Option<CorpusEntryInfo> {
     // Create note to MIDI number mapping
     let mut note_to_midi: HashMap<&str, u8> = HashMap::new();
     let notes = [
@@ -674,6 +679,7 @@ fn parse_corpus_filename(filename: &str, instrument: Instrument) -> Option<Corpu
     // Split the filename by hyphens
     let parts: Vec<&str> = basename.split('-').collect();
     if parts.len() < 4 {
+        println!("Skipping file with too few parts: {}", basename);
         return None;
     }
 
@@ -681,44 +687,156 @@ fn parse_corpus_filename(filename: &str, instrument: Instrument) -> Option<Corpu
     let _instrument = parts[0].to_string();
 
     // Extract technique (second part)
-    let technique : PlayingTechnique = PlayingTechnique::from_str(parts[1]).unwrap();
+    let technique = match PlayingTechnique::from_str(parts[1]) {
+        Ok(t) => t,
+        Err(_) => {
+            // For synth, the second part might be the waveform type (e.g., "triangle")
+            PlayingTechnique::Ordinario
+        }
+    };
 
     // Parse the note (third part)
     let note_str = parts[2];
     // Split note into note name and octave
     let note_name: String = note_str.chars().take_while(|c| !c.is_numeric()).collect();
-    let octave: i32 = note_str
+    
+    let octave_str: String = note_str
         .chars()
         .skip_while(|c| !c.is_numeric())
-        .collect::<String>()
-        .parse()
-        .ok()?;
+        .collect();
+    
+    if octave_str.is_empty() {
+        println!("Failed to parse octave from note: {}", note_str);
+        return None;
+    }
+    
+    let octave: i32 = match octave_str.parse() {
+        Ok(o) => o,
+        Err(e) => {
+            println!("Failed to parse octave as integer: {} - {}", octave_str, e);
+            return None;
+        }
+    };
 
     // Calculate MIDI note number
     // MIDI note 60 is middle C (C4)
-    let base_note = *note_to_midi.get(note_name.as_str())?;
+    let base_note = match note_to_midi.get(note_name.as_str()) {
+        Some(&bn) => bn,
+        None => {
+            println!("Unknown note name: {}", note_name);
+            return None;
+        }
+    };
+    
     let midi_note = base_note as i32 + (octave + 1) * 12;
     if !(0..=127).contains(&midi_note) {
+        println!("MIDI note out of range: {}", midi_note);
         return None;
     }
 
     // Extract dynamics (fourth part)
-    let dynamics = parts[3].to_string();
-    // Extract the string number if the instrument type is BowedString
+    // Handle cases where the file extension might be attached to the dynamics
+    // (which happens with synth files like "synth-triangle-D#2-mf.wav")
+    let dynamics_part = parts[3];
+    let dynamics = dynamics_part.split('.').next().unwrap_or(dynamics_part).to_string();
+    
+    // Extract the string number if the instrument type is for string instruments
     let string = if has_strings(instrument) {
-        parts.get(4).and_then(|s| s.strip_suffix('c')).and_then(|s| s.parse().ok())
+        // Look for a part that ends with 'c' (could be at position 4 or later)
+        for i in 4..parts.len() {
+            if i >= parts.len() {
+                break;
+            }
+            
+            let part = parts[i];
+            if part.ends_with('c') {
+                let string_num = part.trim_end_matches('c');
+                match string_num.parse::<u8>() {
+                    Ok(num) => return Some(CorpusEntryInfo {
+                        technique,
+                        midi_note: midi_note as u8,
+                        dynamics,
+                        string: Some(num),
+                    }),
+                    Err(_) => continue,
+                }
+            }
+        }
+        None
     } else {
         None
     };
 
     Some(CorpusEntryInfo {
-        //instrument,
         technique,
         midi_note: midi_note as u8,
         dynamics,
         string,
     })
 }
+
+
+// fn parse_corpus_filename(filename: &str, instrument: Instrument) -> Option<CorpusEntryInfo> {
+//     // Create note to MIDI number mapping
+//     let mut note_to_midi: HashMap<&str, u8> = HashMap::new();
+//     let notes = [
+//         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+//     ];
+//     for (i, note) in notes.iter().enumerate() {
+//         note_to_midi.insert(note, i as u8);
+//     }
+
+//     // Extract the filename from the path
+//     let basename = filename.split('/').last()?;
+
+//     // Split the filename by hyphens
+//     let parts: Vec<&str> = basename.split('-').collect();
+//     if parts.len() < 4 {
+//         return None;
+//     }
+
+//     // Extract instrument (first part)
+//     let _instrument = parts[0].to_string();
+
+//     // Extract technique (second part)
+//     let technique : PlayingTechnique = PlayingTechnique::from_str(parts[1]).unwrap();
+
+//     // Parse the note (third part)
+//     let note_str = parts[2];
+//     // Split note into note name and octave
+//     let note_name: String = note_str.chars().take_while(|c| !c.is_numeric()).collect();
+//     let octave: i32 = note_str
+//         .chars()
+//         .skip_while(|c| !c.is_numeric())
+//         .collect::<String>()
+//         .parse()
+//         .ok()?;
+
+//     // Calculate MIDI note number
+//     // MIDI note 60 is middle C (C4)
+//     let base_note = *note_to_midi.get(note_name.as_str())?;
+//     let midi_note = base_note as i32 + (octave + 1) * 12;
+//     if !(0..=127).contains(&midi_note) {
+//         return None;
+//     }
+
+//     // Extract dynamics (fourth part)
+//     let dynamics = parts[3].to_string();
+//     // Extract the string number if the instrument type is BowedString
+//     let string = if has_strings(instrument) {
+//         parts.get(4).and_then(|s| s.strip_suffix('c')).and_then(|s| s.parse().ok())
+//     } else {
+//         None
+//     };
+
+//     Some(CorpusEntryInfo {
+//         //instrument,
+//         technique,
+//         midi_note: midi_note as u8,
+//         dynamics,
+//         string,
+//     })
+// }
 
 /// Load the middle N samples from a list of .mp3 files (left channel only).
 pub fn load_audio_corpus(paths: &[String], instrument: Instrument) -> Vec<CorpusEntry> {
@@ -751,7 +869,15 @@ pub fn convert_s24_to_f32(sample: i32) -> f32 {
 }
 
 pub fn load_middle_n_samples(path: &String) -> Option<Vec<f32>> {
-    let file = File::open(Path::new(path)).ok()?;
+    println!("Loading file: {}", path);
+    
+    let file = match File::open(Path::new(path)) {
+        Ok(f) => f,
+        Err(e) => {
+            println!("Failed to open file {}: {}", path, e);
+            return None;
+        }
+    };
 
     // Create appropriate hint based on file extension
     let mut hint = Hint::new();
@@ -760,41 +886,72 @@ pub fn load_middle_n_samples(path: &String) -> Option<Vec<f32>> {
     } else if path.to_lowercase().ends_with(".wav") {
         hint.with_extension("wav");
     } else {
-        eprintln!("Unsupported file format: {}", path);
+        println!("Unsupported file format: {}", path);
         return None;
     }
 
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
-    let probed = symphonia::default::get_probe()
+    let probed = match symphonia::default::get_probe()
         .format(
             &hint,
             mss,
             &FormatOptions::default(),
             &MetadataOptions::default(),
-        )
-        .ok()?;
+        ) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("Failed to probe format for {}: {}", path, e);
+            return None;
+        }
+    };
 
     let mut format = probed.format;
-    let track = format.default_track()?;
+    let track = match format.default_track() {
+        Some(t) => t,
+        None => {
+            println!("No default track found in {}", path);
+            return None;
+        }
+    };
+    
     let codec_params = &track.codec_params;
 
-    let source_sample_rate = codec_params.sample_rate?;
-    let num_channels = codec_params.channels?.count();
+    let source_sample_rate = match codec_params.sample_rate {
+        Some(sr) => sr,
+        None => {
+            println!("Unknown sample rate in {}", path);
+            return None;
+        }
+    };
+    
+    let num_channels = match codec_params.channels {
+        Some(ch) => ch.count(),
+        None => {
+            println!("Unknown channel count in {}", path);
+            return None;
+        }
+    };
 
     if num_channels == 0 || num_channels > 2 {
-        eprintln!("Unsupported number of channels: {}", num_channels);
+        println!("Unsupported number of channels in {}: {}", path, num_channels);
         return None;
     }
 
     // For MP3s, we might not have n_frames, so calculate based on duration if available
-    let total_frames = codec_params.n_frames.or_else(|| {
+    let total_frames = match codec_params.n_frames.or_else(|| {
         codec_params
             .time_base
             .map(|tb| (source_sample_rate as f64 / tb.denom as f64) as u64)
-    })?;
+    }) {
+        Some(f) => f,
+        None => {
+            println!("Could not determine total frames for {}", path);
+            return None;
+        }
+    };
 
-    //  println!("total_frames: {}", total_frames);
+    println!("File {} has {} total frames at {} Hz", path, total_frames, source_sample_rate);
 
     let middle_frame = total_frames / 2;
 
@@ -809,9 +966,17 @@ pub fn load_middle_n_samples(path: &String) -> Option<Vec<f32>> {
     let frames_needed = source_num_samples as u64;
     let start_frame = middle_frame.saturating_sub(frames_needed / 2);
 
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())
-        .ok()?;
+    println!("Reading {} frames from middle ({} - {}) for {}", 
+             frames_needed, start_frame, start_frame + frames_needed, path);
+
+    let mut decoder = match symphonia::default::get_codecs()
+        .make(&codec_params, &DecoderOptions::default()) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Failed to create decoder for {}: {}", path, e);
+            return None;
+        }
+    };
 
     let mut samples: Vec<f32> = Vec::with_capacity(source_num_samples);
     let mut current_frame = 0;
@@ -824,7 +989,10 @@ pub fn load_middle_n_samples(path: &String) -> Option<Vec<f32>> {
                     current_frame += decoded.capacity() as u64;
                 }
             }
-            Err(_) => return None,
+            Err(e) => {
+                println!("Error skipping to target frame in {}: {}", path, e);
+                return None;
+            }
         }
     }
 
@@ -832,95 +1000,104 @@ pub fn load_middle_n_samples(path: &String) -> Option<Vec<f32>> {
     while samples.len() < source_num_samples {
         match format.next_packet() {
             Ok(packet) => {
-                if let Ok(decoded) = decoder.decode(&packet) {
-                    match decoded {
-                        AudioBufferRef::F32(buf) => {
-                            if num_channels == 2 {
-                                for frame in 0..buf.capacity() {
-                                    let mono = (buf.chan(0)[frame] + buf.chan(1)[frame]) * 0.5;
-                                    samples.push(mono);
+                match decoder.decode(&packet) {
+                    Ok(decoded) => {
+                        match decoded {
+                            AudioBufferRef::F32(buf) => {
+                                if num_channels == 2 {
+                                    for frame in 0..buf.capacity() {
+                                        let mono = (buf.chan(0)[frame] + buf.chan(1)[frame]) * 0.5;
+                                        samples.push(mono);
+                                    }
+                                } else {
+                                    samples.extend_from_slice(buf.chan(0));
                                 }
-                            } else {
-                                samples.extend_from_slice(buf.chan(0));
+                            }
+                            AudioBufferRef::U8(buf) => {
+                                if num_channels == 2 {
+                                    for frame in 0..buf.capacity() {
+                                        let mono = ((buf.chan(0)[frame] as f32 / 255.0 - 0.5)
+                                            + (buf.chan(1)[frame] as f32 / 255.0 - 0.5))
+                                            * 0.5;
+                                        samples.push(mono);
+                                    }
+                                } else {
+                                    samples
+                                        .extend(buf.chan(0).iter().map(|&s| (s as f32 / 255.0) - 0.5));
+                                }
+                            }
+                            AudioBufferRef::S24(buf) => {
+                                if num_channels == 2 {
+                                    for frame in 0..buf.capacity() {
+                                        let sample0 = convert_s24_to_f32(buf.chan(0)[frame].inner());
+                                        let sample1 = convert_s24_to_f32(buf.chan(1)[frame].inner());
+                                        let mono = (sample0 + sample1) * 0.5;
+                                        samples.push(mono);
+                                    }
+                                } else {
+                                    samples.extend(buf.chan(0).iter().map(|&s| convert_s24_to_f32(s.inner())));
+                                }
+                            }
+                            AudioBufferRef::S16(buf) => {
+                                if num_channels == 2 {
+                                    for frame in 0..buf.capacity() {
+                                        let mono = ((buf.chan(0)[frame] as f32 / 32768.0)
+                                            + (buf.chan(1)[frame] as f32 / 32768.0))
+                                            * 0.5;
+                                        samples.push(mono);
+                                    }
+                                } else {
+                                    samples.extend(buf.chan(0).iter().map(|&s| s as f32 / 32768.0));
+                                }
+                            }
+                            AudioBufferRef::S32(buf) => {
+                                if num_channels == 2 {
+                                    for frame in 0..buf.capacity() {
+                                        let mono = ((buf.chan(0)[frame] as f32 / 2147483648.0)
+                                            + (buf.chan(1)[frame] as f32 / 2147483648.0))
+                                            * 0.5;
+                                        samples.push(mono);
+                                    }
+                                } else {
+                                    samples
+                                        .extend(buf.chan(0).iter().map(|&s| s as f32 / 2147483648.0));
+                                }
+                            }
+                            _ => {
+                                println!("Unsupported audio format in {}", path);
+                                return None;
                             }
                         }
-                        AudioBufferRef::U8(buf) => {
-                            if num_channels == 2 {
-                                for frame in 0..buf.capacity() {
-                                    let mono = ((buf.chan(0)[frame] as f32 / 255.0 - 0.5)
-                                        + (buf.chan(1)[frame] as f32 / 255.0 - 0.5))
-                                        * 0.5;
-                                    samples.push(mono);
-                                }
-                            } else {
-                                samples
-                                    .extend(buf.chan(0).iter().map(|&s| (s as f32 / 255.0) - 0.5));
-                            }
-                        }
-                        AudioBufferRef::S24(buf) => {
-                            if num_channels == 2 {
-                                for frame in 0..buf.capacity() {
-                                    let sample0 = convert_s24_to_f32(buf.chan(0)[frame].inner());
-                                    let sample1 = convert_s24_to_f32(buf.chan(1)[frame].inner());
-                                    let mono = (sample0 + sample1) * 0.5;
-                                    samples.push(mono);
-                                }
-                            } else {
-                                samples.extend(buf.chan(0).iter().map(|&s| convert_s24_to_f32(s.inner())));
-                            }
-                        }
-                        AudioBufferRef::S16(buf) => {
-                            if num_channels == 2 {
-                                for frame in 0..buf.capacity() {
-                                    let mono = ((buf.chan(0)[frame] as f32 / 32768.0)
-                                        + (buf.chan(1)[frame] as f32 / 32768.0))
-                                        * 0.5;
-                                    samples.push(mono);
-                                }
-                            } else {
-                                samples.extend(buf.chan(0).iter().map(|&s| s as f32 / 32768.0));
-                            }
-                        }
-                        AudioBufferRef::S32(buf) => {
-                            if num_channels == 2 {
-                                for frame in 0..buf.capacity() {
-                                    let mono = ((buf.chan(0)[frame] as f32 / 2147483648.0)
-                                        + (buf.chan(1)[frame] as f32 / 2147483648.0))
-                                        * 0.5;
-                                    samples.push(mono);
-                                }
-                            } else {
-                                samples
-                                    .extend(buf.chan(0).iter().map(|&s| s as f32 / 2147483648.0));
-                            }
-                        }
-                        _ => return None,
+                    },
+                    Err(e) => {
+                        println!("Error decoding packet in {}: {}", path, e);
+                        // Continue with next packet instead of failing
+                        continue;
                     }
                 }
             }
-            Err(_) => break,
+            Err(e) => {
+                println!("Error getting next packet in {}: {}", path, e);
+                break;
+            }
         }
     }
 
     // Ensure we have enough samples
     if samples.len() < source_num_samples {
-        eprintln!(
-            "Warning: File {} has fewer than {} samples.",
-            path, source_num_samples
+        println!(
+            "Warning: File {} has fewer than {} samples ({} actual).",
+            path, source_num_samples, samples.len()
         );
-        return None;
+        if samples.is_empty() {
+            return None;
+        }
     }
-
-    //samples.truncate(source_num_samples);
-
-    //   println!("source sample rate: {}", source_sample_rate);
-    //  println!("target sample rate: {}", TARGET_SAMPLE_RATE);
-
-    // println!("samples: {}, source num samples: {}", samples.len(), source_num_samples);
 
     // Resample if necessary
     let final_samples = if source_sample_rate != TARGET_SAMPLE_RATE {
-        let mut params = SincFixedIn::<f32>::new(
+        println!("Resampling {} from {} Hz to {} Hz", path, source_sample_rate, TARGET_SAMPLE_RATE);
+        let params_result = SincFixedIn::<f32>::new(
             TARGET_SAMPLE_RATE as f64 / source_sample_rate as f64,
             2.0,
             SincInterpolationParameters {
@@ -932,31 +1109,272 @@ pub fn load_middle_n_samples(path: &String) -> Option<Vec<f32>> {
             },
             samples.len(),
             1,
-        )
-        .ok()?;
+        );
+        
+        let mut params = match params_result {
+            Ok(p) => p,
+            Err(e) => {
+                println!("Failed to create resampler for {}: {}", path, e);
+                return None;
+            }
+        };
 
         let waves_in = vec![samples];
-        params.process(&waves_in, None).ok()?[0].to_vec()
+        match params.process(&waves_in, None) {
+            Ok(resampled) => resampled[0].to_vec(),
+            Err(e) => {
+                println!("Failed to resample {}: {}", path, e);
+                return None;
+            }
+        }
     } else {
         samples
     };
 
-    // println!("final_samples: {}", final_samples.len());
-
     // Ensure we have exactly TARGET_SAMPLES after resampling
     let mut final_samples = final_samples;
-    final_samples.truncate(TARGET_SAMPLES);
-
-    if final_samples.len() < TARGET_SAMPLES {
-        eprintln!(
-            "Warning: After resampling, file {} has fewer than {} samples.",
-            path, TARGET_SAMPLES
-        );
-        return None;
+    if final_samples.len() > TARGET_SAMPLES {
+        println!("Truncating {} samples to {} for {}", final_samples.len(), TARGET_SAMPLES, path);
+        final_samples.truncate(TARGET_SAMPLES);
     }
 
+    if final_samples.len() < TARGET_SAMPLES {
+        if final_samples.len() < TARGET_SAMPLES / 2 {
+            println!(
+                "Warning: After resampling, file {} has too few samples ({}/{}).",
+                path, final_samples.len(), TARGET_SAMPLES
+            );
+            return None;
+        }
+        
+        println!(
+            "Padding {} samples to {} for {}",
+            final_samples.len(), TARGET_SAMPLES, path
+        );
+        
+        let original_len = final_samples.len();
+        final_samples.resize(TARGET_SAMPLES, 0.0);
+        
+        // Apply a fade-out to avoid clicks
+        let fade_samples = (TARGET_SAMPLE_RATE as f32 * 0.01) as usize; // 10ms fade
+        for i in 0..fade_samples.min(original_len) {
+            let gain = 1.0 - (i as f32 / fade_samples as f32);
+            let idx = original_len - i - 1;
+            final_samples[idx] *= gain;
+        }
+    }
+
+    println!("Successfully loaded {} samples from {}", final_samples.len(), path);
     Some(final_samples)
 }
+
+// pub fn load_middle_n_samples(path: &String) -> Option<Vec<f32>> {
+//     let file = File::open(Path::new(path)).ok()?;
+
+//     // Create appropriate hint based on file extension
+//     let mut hint = Hint::new();
+//     if path.to_lowercase().ends_with(".mp3") {
+//         hint.with_extension("mp3");
+//     } else if path.to_lowercase().ends_with(".wav") {
+//         hint.with_extension("wav");
+//     } else {
+//         eprintln!("Unsupported file format: {}", path);
+//         return None;
+//     }
+
+//     let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+//     let probed = symphonia::default::get_probe()
+//         .format(
+//             &hint,
+//             mss,
+//             &FormatOptions::default(),
+//             &MetadataOptions::default(),
+//         )
+//         .ok()?;
+
+//     let mut format = probed.format;
+//     let track = format.default_track()?;
+//     let codec_params = &track.codec_params;
+
+//     let source_sample_rate = codec_params.sample_rate?;
+//     let num_channels = codec_params.channels?.count();
+
+//     if num_channels == 0 || num_channels > 2 {
+//         eprintln!("Unsupported number of channels: {}", num_channels);
+//         return None;
+//     }
+
+//     // For MP3s, we might not have n_frames, so calculate based on duration if available
+//     let total_frames = codec_params.n_frames.or_else(|| {
+//         codec_params
+//             .time_base
+//             .map(|tb| (source_sample_rate as f64 / tb.denom as f64) as u64)
+//     })?;
+
+//     //  println!("total_frames: {}", total_frames);
+
+//     let middle_frame = total_frames / 2;
+
+//     // Adjust sample count based on source sample rate to get correct duration
+//     let source_num_samples = if source_sample_rate != TARGET_SAMPLE_RATE {
+//         ((TARGET_SAMPLES as f64) * (source_sample_rate as f64) / (TARGET_SAMPLE_RATE as f64))
+//             as usize
+//     } else {
+//         TARGET_SAMPLES
+//     };
+
+//     let frames_needed = source_num_samples as u64;
+//     let start_frame = middle_frame.saturating_sub(frames_needed / 2);
+
+//     let mut decoder = symphonia::default::get_codecs()
+//         .make(&codec_params, &DecoderOptions::default())
+//         .ok()?;
+
+//     let mut samples: Vec<f32> = Vec::with_capacity(source_num_samples);
+//     let mut current_frame = 0;
+
+//     // Skip packets until we reach our target frame
+//     while current_frame < start_frame {
+//         match format.next_packet() {
+//             Ok(packet) => {
+//                 if let Ok(decoded) = decoder.decode(&packet) {
+//                     current_frame += decoded.capacity() as u64;
+//                 }
+//             }
+//             Err(_) => return None,
+//         }
+//     }
+
+//     // Read only the frames we need
+//     while samples.len() < source_num_samples {
+//         match format.next_packet() {
+//             Ok(packet) => {
+//                 if let Ok(decoded) = decoder.decode(&packet) {
+//                     match decoded {
+//                         AudioBufferRef::F32(buf) => {
+//                             if num_channels == 2 {
+//                                 for frame in 0..buf.capacity() {
+//                                     let mono = (buf.chan(0)[frame] + buf.chan(1)[frame]) * 0.5;
+//                                     samples.push(mono);
+//                                 }
+//                             } else {
+//                                 samples.extend_from_slice(buf.chan(0));
+//                             }
+//                         }
+//                         AudioBufferRef::U8(buf) => {
+//                             if num_channels == 2 {
+//                                 for frame in 0..buf.capacity() {
+//                                     let mono = ((buf.chan(0)[frame] as f32 / 255.0 - 0.5)
+//                                         + (buf.chan(1)[frame] as f32 / 255.0 - 0.5))
+//                                         * 0.5;
+//                                     samples.push(mono);
+//                                 }
+//                             } else {
+//                                 samples
+//                                     .extend(buf.chan(0).iter().map(|&s| (s as f32 / 255.0) - 0.5));
+//                             }
+//                         }
+//                         AudioBufferRef::S24(buf) => {
+//                             if num_channels == 2 {
+//                                 for frame in 0..buf.capacity() {
+//                                     let sample0 = convert_s24_to_f32(buf.chan(0)[frame].inner());
+//                                     let sample1 = convert_s24_to_f32(buf.chan(1)[frame].inner());
+//                                     let mono = (sample0 + sample1) * 0.5;
+//                                     samples.push(mono);
+//                                 }
+//                             } else {
+//                                 samples.extend(buf.chan(0).iter().map(|&s| convert_s24_to_f32(s.inner())));
+//                             }
+//                         }
+//                         AudioBufferRef::S16(buf) => {
+//                             if num_channels == 2 {
+//                                 for frame in 0..buf.capacity() {
+//                                     let mono = ((buf.chan(0)[frame] as f32 / 32768.0)
+//                                         + (buf.chan(1)[frame] as f32 / 32768.0))
+//                                         * 0.5;
+//                                     samples.push(mono);
+//                                 }
+//                             } else {
+//                                 samples.extend(buf.chan(0).iter().map(|&s| s as f32 / 32768.0));
+//                             }
+//                         }
+//                         AudioBufferRef::S32(buf) => {
+//                             if num_channels == 2 {
+//                                 for frame in 0..buf.capacity() {
+//                                     let mono = ((buf.chan(0)[frame] as f32 / 2147483648.0)
+//                                         + (buf.chan(1)[frame] as f32 / 2147483648.0))
+//                                         * 0.5;
+//                                     samples.push(mono);
+//                                 }
+//                             } else {
+//                                 samples
+//                                     .extend(buf.chan(0).iter().map(|&s| s as f32 / 2147483648.0));
+//                             }
+//                         }
+//                         _ => return None,
+//                     }
+//                 }
+//             }
+//             Err(_) => break,
+//         }
+//     }
+
+//     // Ensure we have enough samples
+//     if samples.len() < source_num_samples {
+//         eprintln!(
+//             "Warning: File {} has fewer than {} samples.",
+//             path, source_num_samples
+//         );
+//         return None;
+//     }
+
+//     //samples.truncate(source_num_samples);
+
+//     //   println!("source sample rate: {}", source_sample_rate);
+//     //  println!("target sample rate: {}", TARGET_SAMPLE_RATE);
+
+//     // println!("samples: {}, source num samples: {}", samples.len(), source_num_samples);
+
+//     // Resample if necessary
+//     let final_samples = if source_sample_rate != TARGET_SAMPLE_RATE {
+//         let mut params = SincFixedIn::<f32>::new(
+//             TARGET_SAMPLE_RATE as f64 / source_sample_rate as f64,
+//             2.0,
+//             SincInterpolationParameters {
+//                 sinc_len: 1024,
+//                 f_cutoff: 0.95,
+//                 interpolation: SincInterpolationType::Cubic,
+//                 oversampling_factor: 128,
+//                 window: WindowFunction::BlackmanHarris2,
+//             },
+//             samples.len(),
+//             1,
+//         )
+//         .ok()?;
+
+//         let waves_in = vec![samples];
+//         params.process(&waves_in, None).ok()?[0].to_vec()
+//     } else {
+//         samples
+//     };
+
+//     // println!("final_samples: {}", final_samples.len());
+
+//     // Ensure we have exactly TARGET_SAMPLES after resampling
+//     let mut final_samples = final_samples;
+//     final_samples.truncate(TARGET_SAMPLES);
+
+//     if final_samples.len() < TARGET_SAMPLES {
+//         eprintln!(
+//             "Warning: After resampling, file {} has fewer than {} samples.",
+//             path, TARGET_SAMPLES
+//         );
+//         return None;
+//     }
+
+//     Some(final_samples)
+// }
 
 /* 
 // In analysis.rs, modify load_middle_n_samples to load_samples_at_time:

@@ -727,8 +727,12 @@ fn process_corpus_section(
     // Collect all files from directories
     let mut all_files = Vec::new();
     for path in paths {
+        println!("Searching directory: {}", path);
         match get_audio_files_from_dir(path) {
-            Ok(mut files) => all_files.append(&mut files),
+            Ok(mut files) => {
+                println!("Found {} audio files in {}", files.len(), path);
+                all_files.append(&mut files);
+            },
             Err(e) => {
                 eprintln!("Warning: Failed to read directory {}: {}", path, e);
                 continue;
@@ -741,12 +745,49 @@ fn process_corpus_section(
         return Ok(());
     }
 
+    println!("Loading {} audio files for {:?}...", all_files.len(), instrument);
+    
+    // Print the first few filenames to help debug
+    for (i, file) in all_files.iter().take(5).enumerate() {
+        println!("File {}: {}", i+1, file);
+    }
+    if all_files.len() > 5 {
+        println!("... and {} more files", all_files.len() - 5);
+    }
+
     let entries = load_audio_corpus(&all_files, instrument);
     println!(
-        "Successfully loaded {} files for {:?}",
+        "Successfully loaded {} files for {:?} (out of {} total files)",
         entries.len(),
-        instrument
+        instrument,
+        all_files.len()
     );
+    
+    // If no entries were loaded, print some additional debug info
+    if entries.is_empty() {
+        println!("No valid entries were loaded for {:?}. This may be due to:", instrument);
+        println!("1. Problems parsing filenames (check format)");
+        println!("2. Issues loading audio files (format/codec issues)");
+        println!("3. Invalid or unsupported audio formats");
+        
+        // Try to parse a few filenames to see if that's the issue
+        for (i, file) in all_files.iter().take(3).enumerate() {
+            let basename = file.split('/').last().unwrap_or(file);
+            println!("Attempting to parse filename {}: {}", i+1, basename);
+            
+            if let Some(info) = parse_corpus_filename(file, instrument) {
+                println!("  Successfully parsed: MIDI note {}, technique {:?}, dynamics {}", 
+                         info.midi_note, info.technique, info.dynamics);
+                if let Some(string) = info.string {
+                    println!("  String: {}", string);
+                }
+            } else {
+                println!("  Failed to parse filename");
+            }
+        }
+        
+        return Ok(());
+    }
 
     let corpus = Corpus {
         entries,
@@ -755,9 +796,50 @@ fn process_corpus_section(
     };
 
     all_corpuses.push(corpus);
-
     Ok(())
 }
+
+// fn process_corpus_section(
+//     all_corpuses: &mut Vec<Corpus>,
+//     paths: &[String],
+//     instrument: Instrument,
+// ) -> io::Result<()> {
+//     println!("Loading corpus for {:?}...", instrument);
+
+//     // Collect all files from directories
+//     let mut all_files = Vec::new();
+//     for path in paths {
+//         match get_audio_files_from_dir(path) {
+//             Ok(mut files) => all_files.append(&mut files),
+//             Err(e) => {
+//                 eprintln!("Warning: Failed to read directory {}: {}", path, e);
+//                 continue;
+//             }
+//         }
+//     }
+
+//     if all_files.is_empty() {
+//         eprintln!("Warning: No audio files found in paths: {:?}", paths);
+//         return Ok(());
+//     }
+
+//     let entries = load_audio_corpus(&all_files, instrument);
+//     println!(
+//         "Successfully loaded {} files for {:?}",
+//         entries.len(),
+//         instrument
+//     );
+
+//     let corpus = Corpus {
+//         entries,
+//         name: format!("{:?}", instrument),
+//         instrument,
+//     };
+
+//     all_corpuses.push(corpus);
+
+//     Ok(())
+// }
 // fn main() -> io::Result<()> {
 //     // Get command line arguments
 //     let args: Vec<String> = env::args().collect();

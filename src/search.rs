@@ -24,8 +24,8 @@ impl PartialEq for Individual {
 /// Get the allowed number of simultaneous notes for each instrument
 fn get_allowed_notes(instrument: Instrument) -> Vec<usize> {
     match instrument {
-        Instrument::Violin | Instrument::Cello => vec![1, 1, 1, 2], // Can play either 1 or 2 notes
-        Instrument::Accordion | Instrument::Synth => (1..=6).collect(),                 // Can play 1 to 6 notes
+        Instrument::Violin | Instrument::Cello => vec![0, 1, 1, 1, 2], // Can play either 1 or 2 notes
+        Instrument::Accordion | Instrument::Synth => (0..=6).collect(),                 // Can play 1 to 6 notes
     }
 }
 
@@ -285,13 +285,38 @@ fn get_indices_with_unique_pitches_from_parents(
 // }
 
 /// Calculate fitness for a given set of voices
+// fn calculate_fitness(voices: &[CorpusVoices], corpuses: &[Corpus], target: &[f32]) -> f32 {
+//     let mut all_samples = Vec::new();
+//     for voice in voices {
+//         for &idx in &voice.entry_indices {
+//             all_samples.push(&corpuses[voice.corpus_idx].entries[idx].samples);
+//         }
+//     }
+//     let mixed = mix(&all_samples.iter().map(|v| v.as_slice()).collect::<Vec<_>>());
+//     compare_audio_segments_with_precomputed_target(target, &mixed)
+// }
+
+/// Calculate fitness for a given set of voices
 fn calculate_fitness(voices: &[CorpusVoices], corpuses: &[Corpus], target: &[f32]) -> f32 {
     let mut all_samples = Vec::new();
     for voice in voices {
+        // Skip voices with 0 voices (instruments not participating)
+        if voice.n_voices == 0 || voice.entry_indices.is_empty() {
+            continue;
+        }
+        
         for &idx in &voice.entry_indices {
             all_samples.push(&corpuses[voice.corpus_idx].entries[idx].samples);
         }
     }
+    
+    // If no instruments were selected, return a very low fitness
+    // This should never happen due to checks in crossover and mutate,
+    // but just in case it does, make sure these solutions are heavily penalized
+    if all_samples.is_empty() {
+        return -1.0;  // Using a negative fitness ensures these solutions are always worse than any real solution
+    }
+    
     let mixed = mix(&all_samples.iter().map(|v| v.as_slice()).collect::<Vec<_>>());
     compare_audio_segments_with_precomputed_target(target, &mixed)
 }
@@ -335,6 +360,126 @@ fn get_indices_with_matching_dynamics_from_parents(
 }
 */
 
+// fn crossover(
+//     parent1: &Individual,
+//     parent2: &Individual,
+//     corpuses: &[Corpus],
+//     target: &[f32],
+//     rng: &mut impl Rng,
+// ) -> Individual {
+//     let mut child_voices = Vec::new();
+
+//     for corpus_idx in 0..corpuses.len() {
+//         let corpus = &corpuses[corpus_idx];
+//         let p1_voice = &parent1.entries[corpus_idx];
+//         let p2_voice = &parent2.entries[corpus_idx];
+
+//         match corpus.instrument {
+//             Instrument::Violin | Instrument::Cello => {
+//                 let is_p1_double = p1_voice.n_voices == 2;
+//                 let is_p2_double = p2_voice.n_voices == 2;
+
+//                 // 25% chance to try creating a new double stop from both parents' entries
+//                 if (is_p1_double || is_p2_double) && rng.random_bool(0.25) {
+//                     let mut possible_pairs = Vec::new();
+
+//                     // Collect all possible pairs from both parents' entries
+//                     let p1_entries = &p1_voice.entry_indices;
+//                     let p2_entries = &p2_voice.entry_indices;
+
+//                     for &idx1 in p1_entries {
+//                         for &idx2 in p2_entries {
+//                             if idx1 != idx2
+//                                 && can_play_double_stop(
+//                                     &corpus.entries[idx1],
+//                                     &corpus.entries[idx2],
+//                                     corpus.instrument,
+//                                 )
+//                             {
+//                                 possible_pairs.push(vec![idx1, idx2]);
+//                             }
+//                         }
+//                     }
+
+//                     if !possible_pairs.is_empty() {
+//                         let chosen_pair = possible_pairs.choose(rng).unwrap();
+//                         child_voices.push(CorpusVoices {
+//                             corpus_idx,
+//                             n_voices: 2,
+//                             entry_indices: chosen_pair.clone(),
+//                         });
+//                         continue;
+//                     }
+//                 }
+
+//                 // If we didn't create a new double stop, randomly choose between parents
+//                 let chosen_parent = if rng.random_bool(0.5) {
+//                     p1_voice
+//                 } else {
+//                     p2_voice
+//                 };
+
+//                 if chosen_parent.n_voices == 1 {
+//                     let other_parent = if chosen_parent as *const _ == p1_voice as *const _ {
+//                         p2_voice
+//                     } else {
+//                         p1_voice
+//                     };
+
+//                     let entry_pool: Vec<usize> = chosen_parent
+//                         .entry_indices
+//                         .iter()
+//                         .chain(other_parent.entry_indices.iter())
+//                         .copied()
+//                         .collect();
+
+//                     let selected_idx = *entry_pool.choose(rng).unwrap();
+//                     child_voices.push(CorpusVoices {
+//                         corpus_idx,
+//                         n_voices: 1,
+//                         entry_indices: vec![selected_idx],
+//                     });
+//                 } else {
+//                     child_voices.push(chosen_parent.clone());
+//                 }
+//             }
+
+//             Instrument::Accordion | Instrument::Synth => {
+//                 // Choose parent to inherit from
+
+//                 // Choose parent to inherit from
+//                 let chosen_parent = if rng.random_bool(0.5) {
+//                     p1_voice
+//                 } else {
+//                     p2_voice
+//                 };
+
+//                 // Get new indices with matching dynamics and unique pitches
+//                 let n_voices = chosen_parent.n_voices;
+//                 let entry_indices = get_indices_with_unique_pitches_from_parents(
+//                     chosen_parent,
+//                     corpus,
+//                     n_voices,
+//                     rng,
+//                 );
+
+//                 child_voices.push(CorpusVoices {
+//                     corpus_idx,
+//                     n_voices: entry_indices.len(),
+//                     entry_indices,
+//                 });
+//             }
+//         }
+//     }
+
+//     let fitness = calculate_fitness(&child_voices, corpuses, target);
+//     Individual {
+//         entries: child_voices,
+//         fitness,
+//     }
+// }
+
+
 fn crossover(
     parent1: &Individual,
     parent2: &Individual,
@@ -343,22 +488,85 @@ fn crossover(
     rng: &mut impl Rng,
 ) -> Individual {
     let mut child_voices = Vec::new();
+    let mut any_instrument_included = false;
 
+    // First, determine which instruments to include
+    let mut include_instruments = Vec::with_capacity(corpuses.len());
+    
+    for corpus_idx in 0..corpuses.len() {
+        let p1_voice = &parent1.entries[corpus_idx];
+        let p2_voice = &parent2.entries[corpus_idx];
+        
+        // Determine if this instrument will be included in the child
+        let include_instrument = match (p1_voice.n_voices > 0, p2_voice.n_voices > 0) {
+            (true, true) => true,  // Both parents use this instrument
+            (false, false) => rng.random_bool(0.1),  // Small chance to add if neither parent uses it
+            (true, false) | (false, true) => rng.random_bool(0.7),  // High chance to inherit if one parent uses it
+        };
+        
+        include_instruments.push(include_instrument);
+        if include_instrument {
+            any_instrument_included = true;
+        }
+    }
+    
+    // If no instruments would be included, force at least one random instrument
+    if !any_instrument_included {
+        let forced_idx = rng.random_range(0..corpuses.len());
+        include_instruments[forced_idx] = true;
+    }
+    
+    // Now process each instrument
     for corpus_idx in 0..corpuses.len() {
         let corpus = &corpuses[corpus_idx];
         let p1_voice = &parent1.entries[corpus_idx];
         let p2_voice = &parent2.entries[corpus_idx];
-
+        
+        // Use our pre-determined inclusion decision
+        let include_instrument = include_instruments[corpus_idx];
+        
+        if !include_instrument {
+            // If not including, add an empty voice
+            child_voices.push(CorpusVoices {
+                corpus_idx,
+                n_voices: 0,
+                entry_indices: Vec::new(),
+            });
+            continue;
+        }
+        
+        // Now handle instruments that are included based on their type
         match corpus.instrument {
             Instrument::Violin | Instrument::Cello => {
+                // Use the original code for string instruments, but only if they're participating
+                let p1_participating = p1_voice.n_voices > 0;
+                let p2_participating = p2_voice.n_voices > 0;
+                
+                if !p1_participating && !p2_participating {
+                    // This shouldn't happen given our logic above, but just to be safe
+                    child_voices.push(generate_corpus_voices(corpus, corpus_idx, rng));
+                    continue;
+                }
+                
+                // If only one parent is participating, use that one
+                if !p1_participating {
+                    child_voices.push(p2_voice.clone());
+                    continue;
+                }
+                if !p2_participating {
+                    child_voices.push(p1_voice.clone());
+                    continue;
+                }
+                
+                // Otherwise, both parents are participating
                 let is_p1_double = p1_voice.n_voices == 2;
                 let is_p2_double = p2_voice.n_voices == 2;
 
+                // Rest of the original string instrument crossover logic
                 // 25% chance to try creating a new double stop from both parents' entries
                 if (is_p1_double || is_p2_double) && rng.random_bool(0.25) {
+                    // Original double stop creation logic...
                     let mut possible_pairs = Vec::new();
-
-                    // Collect all possible pairs from both parents' entries
                     let p1_entries = &p1_voice.entry_indices;
                     let p2_entries = &p2_voice.entry_indices;
 
@@ -393,37 +601,26 @@ fn crossover(
                 } else {
                     p2_voice
                 };
-
-                if chosen_parent.n_voices == 1 {
-                    let other_parent = if chosen_parent as *const _ == p1_voice as *const _ {
-                        p2_voice
-                    } else {
-                        p1_voice
-                    };
-
-                    let entry_pool: Vec<usize> = chosen_parent
-                        .entry_indices
-                        .iter()
-                        .chain(other_parent.entry_indices.iter())
-                        .copied()
-                        .collect();
-
-                    let selected_idx = *entry_pool.choose(rng).unwrap();
-                    child_voices.push(CorpusVoices {
-                        corpus_idx,
-                        n_voices: 1,
-                        entry_indices: vec![selected_idx],
-                    });
-                } else {
-                    child_voices.push(chosen_parent.clone());
-                }
-            }
+                child_voices.push(chosen_parent.clone());
+            },
 
             Instrument::Accordion | Instrument::Synth => {
-                // Choose parent to inherit from
-
-                // Choose parent to inherit from
-                let chosen_parent = if rng.random_bool(0.5) {
+                // Handle keyboard instruments (accordion and synth)
+                let p1_participating = p1_voice.n_voices > 0;
+                let p2_participating = p2_voice.n_voices > 0;
+                
+                if !p1_participating && !p2_participating {
+                    // Generate a new voice
+                    child_voices.push(generate_corpus_voices(corpus, corpus_idx, rng));
+                    continue;
+                }
+                
+                // Choose parent to inherit from (or generate new if only one is participating)
+                let chosen_parent = if !p1_participating {
+                    p2_voice
+                } else if !p2_participating {
+                    p1_voice
+                } else if rng.random_bool(0.5) {
                     p1_voice
                 } else {
                     p2_voice
@@ -454,6 +651,27 @@ fn crossover(
     }
 }
 
+// fn mutate(
+//     parent: &Individual,
+//     corpuses: &[Corpus],
+//     target: &[f32],
+//     rng: &mut impl Rng,
+// ) -> Individual {
+//     let mut child_voices = parent.entries.clone();
+
+//     // Pick a random corpus to mutate
+//     let corpus_idx = rng.random_range(0..corpuses.len());
+
+//     // Simply generate a new random voice configuration for this corpus
+//     child_voices[corpus_idx] = generate_corpus_voices(&corpuses[corpus_idx], corpus_idx, rng);
+
+//     let fitness = calculate_fitness(&child_voices, corpuses, target);
+//     Individual {
+//         entries: child_voices,
+//         fitness,
+//     }
+// }
+
 fn mutate(
     parent: &Individual,
     corpuses: &[Corpus],
@@ -462,11 +680,71 @@ fn mutate(
 ) -> Individual {
     let mut child_voices = parent.entries.clone();
 
-    // Pick a random corpus to mutate
-    let corpus_idx = rng.random_range(0..corpuses.len());
-
-    // Simply generate a new random voice configuration for this corpus
-    child_voices[corpus_idx] = generate_corpus_voices(&corpuses[corpus_idx], corpus_idx, rng);
+    // 20% chance to add/remove an instrument entirely
+    if rng.random_bool(0.2) {
+        // Pick a random corpus to toggle participation
+        let corpus_idx = rng.random_range(0..corpuses.len());
+        
+        // If this instrument is currently not participating (0 voices), add it
+        if child_voices[corpus_idx].n_voices == 0 {
+            child_voices[corpus_idx] = generate_corpus_voices(&corpuses[corpus_idx], corpus_idx, rng);
+            // Ensure we generate non-zero voices
+            while child_voices[corpus_idx].n_voices == 0 {
+                child_voices[corpus_idx] = generate_corpus_voices(&corpuses[corpus_idx], corpus_idx, rng);
+            }
+        } 
+        // Otherwise, remove it (set to 0 voices) - but only if it wouldn't leave us with no instruments
+        else {
+            // Check if this is the only instrument that's currently participating
+            let participating_count = child_voices.iter().filter(|v| v.n_voices > 0).count();
+            
+            if participating_count > 1 {
+                // Safe to remove this instrument
+                child_voices[corpus_idx] = CorpusVoices {
+                    corpus_idx,
+                    n_voices: 0,
+                    entry_indices: Vec::new(),
+                };
+            } else {
+                // This is the only instrument - pick a different one to add instead
+                let mut other_indices: Vec<usize> = (0..corpuses.len())
+                    .filter(|&i| i != corpus_idx)
+                    .collect();
+                
+                if !other_indices.is_empty() {
+                    let new_idx = *other_indices.choose(rng).unwrap();
+                    child_voices[new_idx] = generate_corpus_voices(&corpuses[new_idx], new_idx, rng);
+                    // Ensure we generate non-zero voices
+                    while child_voices[new_idx].n_voices == 0 {
+                        child_voices[new_idx] = generate_corpus_voices(&corpuses[new_idx], new_idx, rng);
+                    }
+                }
+            }
+        }
+    } 
+    // 80% chance to do regular mutation
+    else {
+        // Pick a random corpus to mutate that is currently participating
+        let participating_indices: Vec<usize> = child_voices.iter()
+            .enumerate()
+            .filter(|(_, voice)| voice.n_voices > 0)
+            .map(|(idx, _)| idx)
+            .collect();
+        
+        // If no instruments are participating, add one
+        if participating_indices.is_empty() {
+            let corpus_idx = rng.random_range(0..corpuses.len());
+            child_voices[corpus_idx] = generate_corpus_voices(&corpuses[corpus_idx], corpus_idx, rng);
+            // Ensure we generate non-zero voices
+            while child_voices[corpus_idx].n_voices == 0 {
+                child_voices[corpus_idx] = generate_corpus_voices(&corpuses[corpus_idx], corpus_idx, rng);
+            }
+        } else {
+            // Randomly select one of the participating instruments to mutate
+            let idx = *participating_indices.choose(rng).unwrap();
+            child_voices[idx] = generate_corpus_voices(&corpuses[idx], idx, rng);
+        }
+    }
 
     let fitness = calculate_fitness(&child_voices, corpuses, target);
     Individual {
@@ -474,7 +752,6 @@ fn mutate(
         fitness,
     }
 }
-
 /// Perform mutation on an individual
 // fn mutate(
 //     parent: &Individual,
